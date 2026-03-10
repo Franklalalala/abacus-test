@@ -258,23 +258,60 @@ class Vasp(ResultVasp):
             self['scf_time'] = scft
 
     @ResultVasp.register(total_mag = 'total magnization',
+                         absolute_mag="absolute magnetism, the summation of the magnetic moment of all atoms",
                          atom_mag = 'list, the magnization of each atom')
     def GetMagInfo(self):
         getatommag = False
+        atommagsx = []
+        atommagsy = []
+        atommagsz = []
+        
         for i in range(len(self.OUTCAR)):
             i = -i-1
             line = self.OUTCAR[i]
             if line[:19] == " number of electron":
                 self['total_mag'] = float(line.split()[-1])
                 break
-            elif not getatommag and line[:18] == ' magnetization (x)':
+            elif line[:18] == ' magnetization (x)':
                 j = i + 4
                 atommag = []
                 while self.OUTCAR[j][:3] != "---":
                     atommag.append(float(self.OUTCAR[j].split()[-1]))
                     j += 1
-                self['atom_mag'] = atommag
-                getatommag = True
+                atommagsx.append(atommag)
+            elif line[:18] == ' magnetization (y)':
+                j = i + 4
+                atommag = []
+                while self.OUTCAR[j][:3] != "---":
+                    atommag.append(float(self.OUTCAR[j].split()[-1]))
+                    j += 1
+                atommagsy.append(atommag)
+            elif line[:18] == ' magnetization (z)':
+                j = i + 4
+                atommag = []
+                while self.OUTCAR[j][:3] != "---":
+                    atommag.append(float(self.OUTCAR[j].split()[-1]))
+                    j += 1
+                atommagsz.append(atommag)
+        
+        if len(atommagsx) > 0 and len(atommagsy) > 0 and len(atommagsz) > 0:
+            assert len(atommagsx) == len(atommagsy) == len(atommagsz), "The atom magnetism in x, y, z direction should have the same length."
+            atomx = atommagsx[0]
+            atomy = atommagsy[0]
+            atomz = atommagsz[0]
+            atommag = []
+            abs_mag = 0
+            for i in range(len(atomx)):
+                atommag.append([atomx[i],atomy[i],atomz[i]])
+                abs_mag += (atomx[i]**2 + atomy[i]**2 + atomz[i]**2)**0.5
+            self["atom_mag"] = atommag
+            self["absolute_mag"] = abs_mag
+        elif len(atommagsx) > 0:
+            self["atom_mag"] = atommagsx[0]
+            self["absolute_mag"] = sum([abs(i) for i in atommagsx[0]])
+        else:
+            self["atom_mag"] = None
+            self["absolute_mag"]
                 
     
     @ResultVasp.register(atom_name = 'list, the element name of each atom' ,

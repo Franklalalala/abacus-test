@@ -5,6 +5,76 @@ from pathlib import Path
 from .. import constant
 from . import comm
 
+def gen_stru(stru_files, stru_type, pp_path, orb_path, tpath = "."):
+    """
+    Generate the structure files for ABACUS.
+    
+    Args:
+        stru_files (list): List of structure files.
+        stru_type (str): Type of the structure files.
+        pp_path (str): Path to the pseudopotential files.
+        orb_path (str): Path to the orbital files.
+    
+    Returns:
+        jobs (dict): Dictionary, key is the job path, value is:
+            {
+                "element": element,
+                "pp": pp,
+                "orb": orb,
+            }
+    """
+    # Translate structure files to ABACUS STRU format
+    stru_paths = comm.translate_strus(stru_files, stru_type, output_path = tpath)
+    if stru_paths is None:
+        print("Error: tanslate structure files failed.")
+        return None
+    print("Structures are translated to ABACUS STRU and saved in",stru_paths)
+    
+    # Find the pseudopotential files and orbital files
+    pp_paths = comm.collect_pp(pp_path) # the return file name is pp_path/pp
+    orb_paths = comm.collect_pp(orb_path)
+    jobs = {}
+    for ipath in stru_paths:
+        istru = os.path.join(ipath, "STRU")
+        stru = AbacusStru.ReadStru(istru)
+        if stru is None:
+            print("Error: read structure failed.")
+            continue
+        element = stru.get_element(number=False, total=False)
+        pp = []
+        orb = []
+        element_no_pp = [ie for ie in element if ie not in pp_paths]
+        if len(element_no_pp) > 0:
+            print(f"Error: some elements of {ipath} have no pseudopotentials.\n  {', '.join(element_no_pp)}")
+        for ie in element:
+            if ie in pp_paths:
+                pp.append(os.path.basename(pp_paths[ie]))
+                t_file = os.path.join(ipath, os.path.basename(pp_paths[ie]))
+                if os.path.isfile(t_file):
+                    os.remove(t_file)
+                os.symlink(os.path.abspath(pp_paths[ie]), t_file)
+            else:
+                pp.append(None)
+            if ie in orb_paths:
+                orb.append(os.path.basename(orb_paths[ie]))
+                t_file = os.path.join(ipath, os.path.basename(orb_paths[ie]))
+                if os.path.isfile(t_file):
+                    os.remove(t_file)
+                os.symlink(os.path.abspath(orb_paths[ie]), t_file)
+            else:
+                orb.append(None)
+        if None not in pp:
+            stru.set_pp(pp)
+        if None not in orb:
+            stru.set_orb(orb)
+        stru.write(os.path.join(ipath, "STRU"))
+        jobs[ipath] = {
+            "element": element,
+            "pp": pp,
+            "orb": orb,
+        } 
+    return jobs
+
 
 class AbacusStru:
     def __init__(self,
@@ -105,7 +175,7 @@ class AbacusStru:
         self._paw = self._clean_pporb(paw)
         
         if (not self._pp):
-            print("WARNING: pp is not defined!!!")
+            #print("WARNING: pp is not defined!!!")
             self._pp = ["" for i in range(len(self._label))]
             
         
@@ -182,6 +252,10 @@ class AbacusStru:
         if self._lambda:
             assert(n_atom == len(self._lambda)), "ERROR: the length of coord is not equal to lambda"
         return True    
+    
+    def get_natoms(self):
+        '''return the total number of atoms'''
+        return sum(self._atom_number)
     
     def get_pp(self):
         return self._pp
@@ -933,7 +1007,15 @@ class AbacusStru:
                 if self._angle2 and self._angle2[icoord + j] != None:
                         cc += "angle2 %f " % self._angle2[icoord + j]
                 if self._constrain and self._constrain[icoord + j]:
+                    if isinstance(self._constrain[icoord + j],list) and len(self._constrain[icoord + j]) == 3:
                         cc += "sc " + " ".join(["1" if ic else "0" for ic in self._constrain[icoord + j]]) + " " 
+                    elif isinstance(self._constrain[icoord + j],list) and len(self._constrain[icoord + j]) == 1:
+                        cc += "sc " + "1" if self._constrain[icoord + j][0] else "0" + " "
+                    elif not isinstance(self._constrain[icoord + j],list):
+                        cc += "sc " + "1" if self._constrain[icoord + j] else "0" + " "
+                    else:
+                        print("ERROR: the constrain is not a list or a bool value, skip it")
+                        print("\t\tconstrain:",self._constrain[icoord + j])
                 if self._lambda and self._lambda[icoord + j]:
                         cc += "lambda " + " ".join([str(ic) for ic in self._lambda[icoord + j]]) + " "
                 cc += "\n"
@@ -1222,6 +1304,29 @@ class AbacusStru:
                           lambda_=lambda1,
                           dpks=dpks,
                           cartesian=cartesian)
+    @staticmethod
+    def FromDpdata(input_stru: Union[str, Path],
+                   input_fmt: str):
+        '''Read the structure from dpdata supportted file, such as POSCAR, etc.
+        
+        Args:
+            input_stru (str or Path): the file name of the structure file
+            input_fmt (str): the format of the structure file, such as "poscar" etc.
+        '''
+        import dpdata
+        import uuid
+        
+        stru = dpdata.System(input_stru, fmt=input_fmt)
+        tmp_file_name = "tmp." + str(uuid.uuid4())[:8]
+        stru.to("abacus/stru", tmp_file_name)
+        
+        new_stru = AbacusStru.ReadStru(tmp_file_name)
+        if os.path.isfile(tmp_file_name):
+            os.remove(tmp_file_name)
+        if new_stru is None:
+            raise ValueError(f"Can not read the structure from {input_stru} with format {input_fmt}")
+        return new_stru
+
 
 def ReadKpt(kptpath):
     '''
@@ -1275,8 +1380,12 @@ def ReadKpt(kptpath):
             model = "mp"
         elif model.startswith("d"):
             model = "direct"
-        elif model.startswith("l"):
+        elif model.startswith("c"):
+            model = "cartesian"
+        elif model.lower() == "line":
             model = "line"
+        elif model.lower() == "line_cartesian":
+            model = "line_cartesian"
         else:
             print(f"ERROR: the model of KPT file is not support now!!!\n{model}")
             sys.exit(1)
@@ -1284,13 +1393,13 @@ def ReadKpt(kptpath):
         if model in ["mp","gamma"]:
             kpt = [int(i) for i in lines[3].split()[:3]] + [float(i) for i in lines[3].split()[3:6]]
             return kpt,model
-        elif model in ["direct"]:
+        elif model in ["direct", "cartesian"]:
             nk = int(lines[1].split()[0])
             kpt = []
             for i in range(nk):
                 kpt.append([float(ii) for ii in lines[2+i].split()[:4]])
             return kpt,model
-        elif model in ["line"]:
+        elif model in ["line", "line_cartesian"]:
             kpt = []
             for line in lines[3:]:
                 if line.strip() == "":
@@ -1345,7 +1454,7 @@ def WriteKpt(kpoint_list:List = [1,1,1,0,0,0],file_name:str = "KPT", model="gamm
     '''
     if model.lower() in ["gamma","mp"]:
         with open(file_name,'w') as f1:
-            f1.write("K_POINTS\n0\nGamma\n")
+            f1.write(F"K_POINTS\n0\n{model.capitalize()}\n")
             if len(kpoint_list) == 3:
                 kpoint_list += [0,0,0]
             f1.write(" ".join([str(i) for i in kpoint_list]))
@@ -1365,9 +1474,13 @@ def WriteKpt(kpoint_list:List = [1,1,1,0,0,0],file_name:str = "KPT", model="gamm
             f1.write(f"K_POINTS\n{len(kpoint_list)}\n{model.capitalize()}\n")
             for i in kpt:
                 f1.write("%17.11f %17.11f %17.11f %17.11f\n" % tuple(i))
-    elif model.lower() in ["line"]:
+    elif model.lower() in ["line", "line_cartesian"]:
         with open(file_name,'w') as f1:
-            f1.write(f"K_POINTS\n{len(kpoint_list)}\nLine\n")
+            f1.write(f"K_POINTS\n{len(kpoint_list)}\n")
+            if model.lower() == "line":
+                f1.write("Line\n")
+            else:
+                f1.write("Line_Cartesian\n")
             for i in kpoint_list:
                 if len(i) == 4:
                     f1.write("%17.11f %17.11f %17.11f %4d\n" % tuple(i))
@@ -1381,6 +1494,18 @@ def WriteKpt(kpoint_list:List = [1,1,1,0,0,0],file_name:str = "KPT", model="gamm
 
 
 def ReadInput(INPUTf: str = None, input_lines: str = None) -> Dict[str,any]:
+    """Read the INPUT file and return a dictionary of input parameters.
+    
+    Args:
+        INPUTf (str): the file name of the INPUT file.
+        input_lines (str): the lines of the INPUT file.
+    
+    Returns:
+        Dict[str, any]: a dictionary of input parameters.
+        
+    If both `INPUTf` and `input_lines` are provided, `input_lines` will be ignored.
+    The value of each parameter will be converted to int, float, or string as appropriate.
+    """
     #read the INPUT file
     input_context = {}
     if INPUTf != None:
@@ -1403,13 +1528,10 @@ def ReadInput(INPUTf: str = None, input_lines: str = None) -> Dict[str,any]:
         except:
             return ii
     
-    readinput = False
     for i,iline in enumerate(input_lines):
-        if iline.strip()[:16] == 'INPUT_PARAMETERS':
-            readinput = True
-        elif iline.strip() == '' or iline.strip()[0] in ['#']:
+        if iline.strip() == '' or iline.strip()[0] in ['#']:
             continue
-        elif readinput:
+        else:
             sline = re.split('[ \t]',iline.split("#")[0].strip(),maxsplit=1)
             if len(sline) == 2:
                 input_context[sline[0].lower().strip()] = str2intfloat(sline[1].strip())
@@ -1420,7 +1542,7 @@ def WriteInput(input_context:Dict[str,any],
     out = "INPUT_PARAMETERS\n"
     for k,v in input_context.items():
         if v != None:
-            out += "%s\t%s\n" % (str(k),str(v))
+            out += f"{k} \t{v}\n"
         else:
-            out += "#%s\t \n" % (str(k))
+            out += f"#{k}\t \n"
     with open(INPUTf,'w') as f1: f1.write(out)        

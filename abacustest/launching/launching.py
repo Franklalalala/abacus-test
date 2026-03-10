@@ -1,18 +1,28 @@
-import traceback
-from dp.launching.cli import SubParser,run_sp_and_exit,default_exception_handler
-from abacustest.launching import (model_normal,
- model_selfDefine,
- model_summary,
- model_postdft,
- model_predft,
- model_advanced,
+
+from dp.launching.cli import (
+    SubParser,
+    default_minimal_exception_handler,
+    run_sp_and_exit,
+    to_runner,
+    default_exception_handler
+)
+
+from abacustest.launching import (
+    #model_normal,
+ #model_selfDefine,
+ #model_summary,
+ #model_postdft,
+ #model_predft,
+ #model_advanced,
  model_expert,
  model_report,
  model_reuse,
  model_phonon,
  model_fdforce,
  model_fdmagforce,
- model_fdstress
+ model_fdstress,
+ model_autoAbacus,
+ model_vasp2abacus
  )
 
 
@@ -32,7 +42,9 @@ def to_parser():
        # "SettingFileDatasets":SubParser(model_selfDefine.SelfDefineDatasetsModel,model_selfDefine.SelfDefineModelRunner,"run self-defined model(use launching datasets as input)"),
         #"UploadDatasets":SubParser(model_uploadDataset.UplaodDatasetModel,model_uploadDataset.UplaodDatasetModelRunner,"upload datasets to datahub"),
        # "Report":SubParser(model_report.ReportModel,model_report.ReportModelRunner,"report metrics.json"),
-         "06-FDMagForce":  SubParser(model_fdmagforce.FDMagForceModel,model_fdmagforce.FDMagForceModelRunner,"Do finite difference magnetic force calculation. Need mag_force_info.txt file in each example inputs."),
+       "08-Vasp2Abacus": SubParser(model_vasp2abacus.Vasp2AbacusModel, model_vasp2abacus.Vasp2AbacusRunner, "Convert VASP jobs to ABACUS jobs"),
+        "07-AutoRun":  SubParser(model_autoAbacus.AutoABACUSModel,model_autoAbacus.AutoABACUSRunner,"Auto run abacus jobs"), 
+        "06-FDMagForce":  SubParser(model_fdmagforce.FDMagForceModel,model_fdmagforce.FDMagForceModelRunner,"Do finite difference magnetic force calculation. Need mag_force_info.txt file in each example inputs."),
         "05-FDStress":  SubParser(model_fdstress.FDStressModel,model_fdstress.FDStressModelRunner,"Do finite difference stress calculation."), 
         "04-FDForce":  SubParser(model_fdforce.FDForceModel,model_fdforce.FDForceModelRunner,"Do finite difference force calculation. Need info.txt file in each example inputs."), 
         "03-Phonon": SubParser(model_phonon.PhononModel,model_phonon.PhononModelRunner,"Calculate phonon"),    
