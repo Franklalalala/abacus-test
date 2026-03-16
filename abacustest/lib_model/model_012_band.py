@@ -5,6 +5,7 @@ import numpy as np
 from abacustest.lib_prepare.abacus import ReadInput, WriteInput, ReadKpt, WriteKpt, AbacusStru
 from abacustest.constant import RY2EV
 from abacustest.lib_collectdata.comm import cal_band_gap
+from abacustest.constant import RECOMMAND_IMAGE, RECOMMAND_COMMAND, RECOMMAND_MACHINE
 
 class BandModel(Model):
     @staticmethod
@@ -29,9 +30,9 @@ class BandModel(Model):
         
         parser.description = "Prepare the band structure calculation. Will generate the scf/nscf/kpath input files."
         parser.add_argument('-j', '--job',default=["."], action="extend",nargs="*" ,help='the path of abacus inputs, default is current folder')
-        parser.add_argument("-c", "--rundftcommand", type=str, default="OMP_NUM_THREADS=1 mpirun -np 16 abacus | tee out.log",help="the command to execute aabcus, default is 'OMP_NUM_THREADS=1 mpirun -np 16 abacus | tee out.log' ")
-        parser.add_argument("-i","--image",default="registry.dp.tech/deepmodeling/abacus-intel:latest",type=str,help="the used image. Default is: registry.dp.tech/deepmodeling/abacus-intel:latest", )
-        parser.add_argument("--machine", default="c32_m64_cpu", help="the machine to run the abacus. Default is c32_m64_cpu")
+        parser.add_argument("-c", "--rundftcommand", type=str, default=RECOMMAND_COMMAND,help=f"the command to execute aabcus, default is '{RECOMMAND_COMMAND}' ")
+        parser.add_argument("-i","--image",default=RECOMMAND_IMAGE,type=str,help="the used image. Default is: registry.dp.tech/dptech/abacus-stable:LTSv3.10", )
+        parser.add_argument("--machine", default=RECOMMAND_MACHINE, help="the machine to run the abacus. Default is c32_m64_cpu")
         parser.add_argument("-r", "--run", default=0, help="if run the test. Default is 0.", type=int)
         return parser
     
@@ -41,7 +42,7 @@ class BandModel(Model):
         Usually, this step will generate the input files for abacustest submit.
         '''
         real_jobs = comm.get_job_list(params.job)
-        real_jobs, run_script = PrepBand(real_jobs,params.rundftcommand).run()
+        real_jobs, run_script, extra_files = PrepBand(real_jobs,params.rundftcommand).run()
         if len(real_jobs) == 0:
             print("No valid job is found")
             return
@@ -51,6 +52,7 @@ class BandModel(Model):
             "bohrium_group_name": "band-strcutre",
             "run_dft": {
                 "example": real_jobs,
+                "extra_files": extra_files,
                 "command": run_script,
                 "image": params.image,
                 "bohrium": {
@@ -110,7 +112,7 @@ class PrepBand:
             print(f"Error: the job type {self.job_type} is not supported")
             jobs = []
         
-        return jobs, f"bash {self.run_script}"
+        return jobs, f"bash {self.run_script}", [self.run_script]
                 
     def modify_command(self,command):
         # if the command is end with | tee out.log, remove it
@@ -167,16 +169,19 @@ class PrepBand:
             nscf_input["out_band"] = 1
             nscf_input["kpoint_file"] = self.nscf_kpt
             nscf_input.pop("kspacing",None)
+            if nscf_input.get("symmetry",None) == 1:
+                nscf_input["symmetry"] = 0
             WriteInput(nscf_input,os.path.join(job,self.nscf_input))
             stru.get_kline(kpt_file=os.path.join(job,self.nscf_kpt),point_number=20)
             
-            # gen run script
-            with open(os.path.join(job,self.run_script),"w") as f:
+            valid_jobs.append(job)
+        # gen run script
+        if len(valid_jobs) > 0:
+            with open(self.run_script,"w") as f:
                 f.write(f"cp {self.scf_input} INPUT\n")
                 f.write(f"{self.run_command} | tee scf.log\n")
                 f.write(f"cp {self.nscf_input} INPUT\n")
                 f.write(f"{self.run_command} | tee nscf.log\n")
-            valid_jobs.append(job)
         return valid_jobs
         
 
@@ -201,7 +206,9 @@ class PostBand:
                 print(f"Warning: can not find the band file {band_file}")
                 continue
             bands = self.get_band(band_file)
-            self.plot_band(bands, kpt, os.path.join(job,"band.png"), efermi=self.get_efermi(os.path.join(job,"OUT."+suffix,"running_nscf.log")))
+            self.plot_band(bands[1:], kpt, os.path.join(job,"band.png"), 
+                           x=bands[0],
+                           efermi=self.get_efermi(os.path.join(job,"OUT."+suffix,"running_nscf.log")))
     
     def get_efermi(self, logfile):
         with open(logfile) as f:
@@ -217,7 +224,7 @@ class PostBand:
     @staticmethod
     def get_band(band_file):
         bands = np.loadtxt(band_file)
-        return bands[:,2:].T # the first two columns are index
+        return bands[:,1:].T # the first column is the index, the second colume is the coordinate
                  
     def find_input(self, job):
         if self.input_file is not None and os.path.isfile(os.path.join(job,self.input_file)):
@@ -245,17 +252,49 @@ class PostBand:
         return None
 
     @staticmethod
-    def rearrange_plotdata(band, line_points):
+    def split_plotdata(band_in, line_points, x=None):
+        # band: Nbands x Nkpoints
         # line_points is a list of the high symmetry k points and contarns the k points and symbols, 
-        # which is generated by the ReadKpt.get_kline, line [0.0, 0.0, 0.0, 20, '#G']
-        npoint = []
+        # which is generated by the ReadKpt.get_kline, like [0.0, 0.0, 0.0, 20, '#G']
+        
+        band = np.array(copy.deepcopy(band_in))
+        nbands, nkpoints = band.shape
         symbols = []
-        for line in line_points:
-            npoint.append(line[3])
-            symbols.append(line[4].lstrip("#"))
+        positions = []
+        band_values = []
         
-        assert sum(npoint) == len(band[0]), "The number of k points is not equal to the band data"
+        if x is not None and len(x) != nkpoints:
+            print(f"Warning: the length of x is not equal to the length of band data, x={len(x)}, band={len(band[0])}")
+            return None
         
+        if x is not None:
+            x = np.array(x)
+
+        start_position = 0
+        start_idx = 0
+        for idx in range(len(line_points)-1):
+            line = line_points[idx]
+            kx, ky, kz, npoint, symbol = line
+            if npoint == 1:
+                if x is not None:
+                    start_idx += 1
+                continue 
+            
+            kx_next, ky_next, kz_next, npoint_next, symbol_next = line_points[idx+1]
+            symbols.append([symbol.lstrip("#").strip(),symbol_next.lstrip("#").strip()])
+            band_values.append(band[:, start_idx:start_idx+npoint+1])
+
+            if x is None:
+                distance = np.sqrt((kx_next-kx)**2 + (ky_next-ky)**2 + (kz_next-kz)**2)  
+                positions.append(start_position + np.arange(0, npoint+1) * distance / (npoint))
+                start_position += distance
+            else:
+                positions.append(x[start_idx:start_idx+npoint+1])
+                start_idx += npoint
+
+        return positions, symbols, band_values
+
+        '''
         # if one point has only 1 k point, then we should merge it with the next point
         x = sum(npoint) - npoint.count(1)
         if npoint[-1] == 1: x += 1
@@ -284,38 +323,96 @@ class PostBand:
                 points = [npoint[i]]
             else:
                 points.append(npoint[i])
+        band_idx[-1][1] += 1
+        band_idx[-1][3] += 1
         return band_idx, symbol_index, symbols_new
+        '''
     
-    def plot_band(self, band, kpt, filename, efermi = None):
+    def rearrange_label(self, positions, symbols, band_values, new_symbols):
+        new_pos = []
+        new_bandv = []
+
+        # check if the symbols in new_symbols are in the symbols
+        for isymbol in new_symbols:
+            if isymbol not in symbols and [isymbol[1], isymbol[0]] not in symbols:
+                print(f"Warning: the symbol {isymbol} is not in the symbols")
+                return positions, symbols, band_values
+
+        start_pos = 0    
+        for i in range(len(new_symbols)):
+            s0 = new_symbols[i][0]
+            s1 = new_symbols[i][1]
+            if [s0,s1] in symbols:
+                idx = symbols.index([s0,s1])
+                pos = positions[idx]
+                bv = band_values[idx]
+            elif [s1,s0] in symbols:
+                idx = symbols.index([s1,s0])
+                pos = positions[idx][::-1] * -1
+                bv = band_values[idx][::-1]
+
+            new_pos.append(pos - pos[0] + start_pos)
+            new_bandv.append(bv)
+            start_pos = new_pos[-1][-1] 
+        return new_pos, new_symbols, new_bandv
+
+    
+    def plot_band(self, band, kpt, filename, x=None, efermi = None):
+        if x is None:
+            x = np.arange(len(band[0]))
+        if len(x) != len(band[0]):
+            print(f"Warning: the length of x is not equal to the length of band data, x={len(x)}, band={len(band[0])}")
+            return None
+        
         if kpt is None or kpt[1] != "line":
-            band_idx = [[0, len(band[0]), 0, len(band[0])]]
-            symbol_index = None
+            positions = [np.range(len(band[0]))]
+            band_values = [band]
             symbols = None
         else:
-            band_idx, symbol_index, symbols = self.rearrange_plotdata(band, kpt[0])
-            print(band_idx, symbol_index, symbols)
+            positions, symbols, band_values = self.split_plotdata(band, kpt[0], x)
+            # ABACUS has a bug that if the symbols are not continuous, the positions will has a gap
+            # so we need to rearrange the symbols and positions
+            positions, symbols, band_values = self.rearrange_label(positions, symbols, band_values, symbols)
+            #print(symbols)   
         import matplotlib.pyplot as plt
         fontsize = 12
         fig, ax = plt.subplots(1,2,figsize=(8,4))
-        for i, idx in enumerate(band_idx):
-            for iband in band:
-                ax[0].plot(range(idx[0], idx[1]), iband[idx[2]:idx[3]], "--", color="black",linewidth=0.5)
-                ax[1].plot(range(idx[0], idx[1]), iband[idx[2]:idx[3]], "--", color="black",linewidth=0.5) 
-        ax[0].set_xlim(0, band_idx[-1][1])
-        ax[1].set_xlim(0, band_idx[-1][1])
+        for i, (pos, iband) in enumerate(zip(positions, band_values)):
+            for iiband in iband:
+                ax[0].plot(pos, iiband, "-", color="red",linewidth=0.6)
+                ax[1].plot(pos, iiband, "-", color="red",linewidth=0.6)
+        
         if symbols is not None:
-            ax[0].set_xticks(symbol_index)
-            ax[0].set_xticklabels(symbols, fontsize=fontsize)
-            ax[1].set_xticks(symbol_index)
-            ax[1].set_xticklabels(symbols, fontsize=fontsize)
+            symbol_pos = [positions[0][0]]
+            symbol_val = [symbols[0][0]]
+            for i in range(1,len(positions)):
+                symbol_pos.append(positions[i][0])
+                if symbols[i-1][-1] == symbols[i][0]:
+                    symbol_val.append(symbols[i][0])
+                else:
+                    symbol_val.append(symbols[i-1][-1] + "|" + symbols[i][0])
+                ax[0].axvline(x=positions[i][0], color="gray", linestyle="--", linewidth=0.4)
+                ax[1].axvline(x=positions[i][0], color="gray", linestyle="--", linewidth=0.4)
+            symbol_pos.append(positions[-1][-1])
+            symbol_val.append(symbols[-1][-1])
+            print(symbol_pos)
+            print(symbol_val)
+            ax[0].set_xticks(symbol_pos)
+            ax[0].set_xticklabels(symbol_val, fontsize=fontsize)
+            ax[1].set_xticks(symbol_pos)
+            ax[1].set_xticklabels(symbol_val, fontsize=fontsize)
+            
+        ax[0].set_xlim(0, positions[-1][-1])
+        ax[1].set_xlim(0, positions[-1][-1])  
+
         ax[0].set_xlabel("K points", fontsize=fontsize)
         ax[1].set_xlabel("K points", fontsize=fontsize)
         ax[0].set_ylabel("Energy (eV)", fontsize=fontsize)
         ax[1].set_ylabel("Energy (eV)", fontsize=fontsize)
-        
+
         if efermi is not None:
-            ax[0].axhline(y=efermi, color="red", linestyle="--")
-            ax[1].axhline(y=efermi, color="red", linestyle="--")
+            ax[0].axhline(y=efermi, color="red", linestyle="--", linewidth=0.8)
+            ax[1].axhline(y=efermi, color="red", linestyle="--", linewidth=0.8)
             bg = cal_band_gap([np.array(band).T], efermi)
             #ax[0].text(band_idx[-1][1], efermi+0.3, f"E_f={efermi:.2f}eV (BG={bg:.2f}eV)", color="red", fontsize=fontsize-2)
             #ax[1].text(band_idx[-1][1], efermi+0.3, f"E_f={efermi:.2f}eV (BG={bg:.2f}eV)", color="red", fontsize=fontsize-2)

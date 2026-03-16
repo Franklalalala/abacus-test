@@ -4,6 +4,7 @@ from .lib_collectdata.collectdata import RESULT
 from .lib_collectdata.comm import get_metric_from_str
 import argparse
 import traceback
+from abacustest.lib_prepare.abacus import ReadInput
 
 def parse_param(paramf):
     if os.path.isfile(paramf):
@@ -83,7 +84,7 @@ def CollectDataArgs(parser):
     parser.description = "This script is used to collect some key values from the output of ABACUS/QE/VASP jobs"
     parser.add_argument('-j', '--jobs', default=["."], help='the path of jobs', action="extend",nargs="*")
     parser.add_argument('-t', '--type', type=int, default=0, help='0:abacus, 1:qe, 2:vasp. Default: 0',choices=[0,1,2])
-    parser.add_argument('-p', '--param', type=str, default=None, help='the parameter file, should be .json type')
+    parser.add_argument('-p', '--param', type=str, default=None,nargs="*", help='the parameter file, or parameter name.')
     parser.add_argument('-o', '--output', type=str, default="metrics.json",help='the file name to store the output results, default is "metrics.json"')
     parser.add_argument('-m', '--modules',help='add extra modules. Default only module \'job-type\' will be loaded, such as: \'abacus\' for abacus type. You can check all modules by --outparam', action="extend",nargs="*")
     parser.add_argument('--newmethods', help='the self-defined python modules, and shuold be format of import, such as "abc"(the file name is abc.py), "a.b.c" (teh file is a/b/c.py)', action="extend",nargs="*")
@@ -116,11 +117,16 @@ def collectdata(param):
         return   
     if paramf == None:
         allparams = []
-    elif not os.path.isfile(paramf):
-        print("ERROR: can not find parameter file %s!!!" % paramf)
-        return
     else:
-        allparams = parse_param(paramf)
+        allparams = []
+        for iparam in paramf:
+            if os.path.isfile(iparam) and iparam.endswith(".json"):
+                allparams += parse_param(iparam)
+            else:
+                allparams.append(iparam)
+    
+    if len(allparams) == 0:
+        print(NO_PARAM_WARNING)
         
     allresult = {}
     for ipath in alljobs:
@@ -131,8 +137,14 @@ def collectdata(param):
         print("Handle %s" % ipath)
     
         result = RESULT(fmt=jobtype, path=ipath,newmethods=param.newmethods,modules=param.modules,resultREF=param.ref)
+
+        if os.path.isfile(os.path.join(ipath, "INPUT")):
+            input_param = ReadInput(os.path.join(ipath, "INPUT"))
+        else:
+            input_param = {}
+        
+        job_type = input_param.get("calculation", "scf")
         if len(allparams) == 0:
-            print(NO_PARAM_WARNING)
             allparams = ["normal_end","converge","nkstot","ibzk",
                 "nbands","nelec","natom","scf_steps","total_time",
                 "scf_time",
@@ -149,6 +161,20 @@ def collectdata(param):
                 "denergy_last",
                 "version"]
             #allparams = list(result.AllMethod().keys())
+            if job_type in ["relax","cell-relax"]:
+                allparams.append("relax_steps")
+                allparams.append("relax_converge")
+                allparams.append("largest_gradient")
+
+                if job_type == "cell-relax":
+                    allparams.append("largest_gradient_stress")
+                    allparams.append("lattice_constants")
+            
+            if input_param.get("nspin",1) in [2,4]:
+                allparams.append("total_mag")
+                allparams.append("absolute_mag")
+                allparams.append("atom_mag")
+
         allresult[ipath] = parse_value(result,allparams)
 
     print("Write the results to %s" % outputf)

@@ -1,21 +1,63 @@
 import numpy as np
 from typing import List
-import dpdata
 import os, glob, re, json
 import traceback
 from abacustest.constant import MASS_DICT
 
-def translate_strus(input_strus, input_stru_type, output_path = "."):
+def Direct2Cartesian(coord:List[List[float]],cell:List[List[float]]):
+    return np.array(coord).dot(np.array(cell)).tolist()
+
+def Cartesian2Direct(coord:List[List[float]],cell:List[List[float]]):
+    return np.array(coord).dot(np.linalg.inv(np.array(cell))).tolist()
+
+def translate_strus(input_strus, input_stru_type, output_path = ".", folder_syntax=None):
     """
     Translate the structure from one format to ABACUS stru.
     
     input_strus: str/list, the input structure.
     input_stru_type: str, the input structure type.
     output_stru_type: str, the output structure type.
+    output_path: str, the output path.
+    folder_syntax: str, the python syntax for each structure corresponding to its folder, 
+                   using string variable "x" to denote the input structure filename, and write the python syntax in {}. 
+                   For example, if the structure file is "Fe.cif", the syntax "{x[:-4]}" represents "Fe", and "aa-{x[:-4]}-yy" represents "aa-Fe-yy". 
+                   This function will create the new directory and save the structure inside it. 
+                   The default is None, indicating the generation of 00001, 00002
+                   If the folder already exists, the function will add a number to the folder name. 
+                   Like Fe.1, Fe.2, ...
     
     Return:
     output_strus: list, the output structure.
     """
+    import dpdata
+
+    def gen_path_name(base_path, create=False):
+        if not os.path.exists(base_path):
+            if create:
+                os.makedirs(base_path)
+            return base_path
+        else:
+            idx = 1
+            while os.path.exists(f"{base_path}.{idx}"):
+                idx += 1
+            if create:
+                os.makedirs(f"{base_path}.{idx}")
+            return f"{base_path}.{idx}"
+    
+    def gen_folder_by_syntax(x, idx, output_path, syntax=None, create=False):
+        # generate the folder name based on the syntax or idx
+        # if use idx, then True, otherwise False
+        if syntax is None:
+            return gen_path_name(os.path.join(output_path,"%06d" % idx),create=create), True
+        else:
+            try:
+                v = eval(f"f'{syntax}'")
+                return gen_path_name(os.path.join(output_path,v),create=create), False
+            except:
+                traceback.print_exc()
+                print("ERROR: %s is not a valid syntax" % syntax)
+                return gen_path_name(os.path.join(output_path,"%06d" % idx),create=create), True
+
     dpdata_formats = dpdata.format.Format.get_formats()
     if input_stru_type not in dpdata_formats and input_stru_type.lower() != "cif":
         print("ERROR: input_stru_type should be in cif, %s, but not %s" % (str(dpdata_formats),input_stru_type))
@@ -30,25 +72,48 @@ def translate_strus(input_strus, input_stru_type, output_path = "."):
     try:
         for istru in input_strus:
             for iistru in glob.glob(istru):
-                if input_stru_type in dpdata_formats:
-                    stru = dpdata.System(iistru,fmt=input_stru_type)
-                elif input_stru_type.lower() == "cif":
-                    from ase.io import read as ase_read
-                    stru = ase_read(iistru)
-                    stru = dpdata.System(stru, fmt="ase/structure")
-                
-                print("Translating %s to ABACUS stru:" % iistru)
-                struinfo[istru] = []
-                for i in range(stru.get_nframes()):
-                    tpath = os.path.join(output_path,"%06d" % idx)
-                    os.makedirs(tpath,exist_ok=True)
-                    stru.to("abacus/stru", os.path.join(tpath,"STRU"),i)
-                    output_folders.append(tpath)
+                tpath, use_idx = gen_folder_by_syntax(iistru, idx, output_path, folder_syntax, create=True)
+                if use_idx: 
                     idx += 1
-                    print("    Save to %s" % os.path.join(tpath,"STRU"))
+                
+                if input_stru_type in ["abacus/stru", "stru"]:
+                    os.system("cp %s %s" % (iistru, os.path.join(tpath,"STRU")))
+                    output_folders.append(tpath)
+                    print("Copy %s to %s" % (iistru, os.path.join(tpath,"STRU")))
                     with open(os.path.join(tpath,"struinfo.txt"),"w") as f:
                         f.write(istru)
-                    struinfo[istru].append(os.path.basename(tpath))
+                    struinfo[istru] = [os.path.basename(tpath)]
+                else:    
+                    if input_stru_type in dpdata_formats:
+                        stru = dpdata.System(iistru,fmt=input_stru_type)
+                    elif input_stru_type.lower() == "cif":
+                        try:
+                            from ase.io import read as ase_read
+                            stru = ase_read(iistru)
+                            stru = dpdata.System(stru, fmt="ase/structure")
+                        except:
+                            try:
+                                from pymatgen.core import Structure
+                                stru = Structure.from_file(iistru)
+                                stru = dpdata.System(stru, fmt="pymatgen/structure")
+                            except:
+                                traceback.print_exc()
+                                raise Exception("Cannot read cif file %s with ase or pymatgen" % iistru)
+                    
+                    print("Translating %s to ABACUS stru:" % iistru)
+                    struinfo[istru] = []
+                    for i in range(stru.get_nframes()):
+                        if stru.get_nframes() > 1:
+                            ipath = gen_path_name(tpath + f".{i}", create=True)
+                        else:
+                            itpath = tpath
+
+                        stru.to("abacus/stru", os.path.join(itpath,"STRU"),i, pp_file=["" for _ in stru.data["atom_names"]])
+                        output_folders.append(itpath)
+                        print("    Save to %s" % os.path.join(itpath,"STRU"))
+                        with open(os.path.join(itpath,"struinfo.txt"),"w") as f:
+                            f.write(istru)
+                        struinfo[istru].append(os.path.basename(itpath))
     except:
         traceback.print_exc()
         print("ERROR: %s to ABACUS STRU failed" % (input_stru_type))
@@ -75,8 +140,8 @@ def read_pp_valence(pp_file):
 def get_element_name_from_file(filename):
         #the filename should be started with the element name and followed by character non-alpha
         def check_element(element):
-            if element.capitalize() in MASS_DICT:
-                return element.capitalize()
+            if element in MASS_DICT:
+                return element
             else:
                 return None
         filename = os.path.basename(filename)
@@ -119,7 +184,7 @@ def kspacing2kpt(kspacing, cell):
     """
     Convert kspacing to kpt.
     """
-    if isinstance(kspacing, float):
+    if isinstance(kspacing, (float,int)):
         kspacing = [kspacing, kspacing, kspacing]
     elif isinstance(kspacing, str):
         a = kspacing.split()
@@ -339,4 +404,54 @@ def pert_vector(vectors:List[List[float]],max_angle):
     for ivector in vectors:
         new_vectors.append(np.dot(R_matrix,ivector).tolist())
     return new_vectors
-        
+
+def mag_to_angle(magx,magy,magz):
+    '''return the angle1 and angle2 of the magnetization'''
+    mag = np.array([magx,magy,magz])
+    mag /= np.linalg.norm(mag)
+    angle1 = np.arccos(mag[2]) * 180 / np.pi
+    angle2 = np.arctan2(mag[1],mag[0]) * 180 / np.pi
+    return angle1,angle2
+
+def angle_to_mag(totmag,angle1,angle2):
+    '''return the magnetization of the magnetization'''
+    if angle1 is None:
+        angle1 = 0
+    if angle2 is None:
+        angle2 = 0
+    angle1 = angle1 * np.pi / 180
+    angle2 = angle2 * np.pi / 180
+    mag = np.array([np.sin(angle1)*np.cos(angle2),np.sin(angle1)*np.sin(angle2),np.cos(angle1)])
+    mag *= totmag
+    return mag.tolist()
+
+
+def real2rec(cell:List[List[float]]):
+    """
+    Transform real space lattice vectors to reciprocal lattice vectors (2π included).
+    
+    NOTE: it can be also used to transform a reciprocal lattice vectors to real lattice vectors 
+
+    Parameters
+    ----------
+    cell : list of list of float or np.ndarray
+        Real space lattice vectors, shape (3,3), cell = [a1, a2, a3], 
+        where a1 = [x1, y1, z1], a2 = [x2, y2, z2], a3 = [x3, y3, z3].
+    
+    Returns
+    -------
+    List[List[float]]
+        Reciprocal lattice vectors B = [b1, b2, b3], shape (3,3).
+    """
+    A = np.array(cell, dtype=np.float64)
+    if A.shape != (3, 3):
+        raise ValueError(f"Input cell must be 3x3 matrix, got shape {A.shape}")
+    
+    det_A = np.linalg.det(A)
+    if np.isclose(det_A, 0):
+        raise np.linalg.LinAlgError("Real space cell is singular (det=0), cannot compute reciprocal cell.")
+    
+    A = np.array(cell)
+    B = 2 * np.pi * np.linalg.inv(A.T)
+    return B.tolist()
+

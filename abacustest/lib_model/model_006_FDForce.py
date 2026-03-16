@@ -5,7 +5,7 @@ from abacustest.lib_collectdata.collectdata import RESULT
 from abacustest.prepare import PrepareAbacus
 from ..model import Model
 from . import comm
-from abacustest.constant import RECOMMAND_IMAGE
+from abacustest.constant import RECOMMAND_IMAGE, RECOMMAND_COMMAND, RECOMMAND_MACHINE
 
 PREPARE_DOC="""
     This model is used to do the finite difference test of force. 
@@ -89,10 +89,10 @@ class fdforce(Model):
                 "bohrium_group_name": "FDForce",
                 "run_dft": {
                     "example": subfolders,
-                    "command": "OMP_NUM_THREADS=1 mpirun -np 16 abacus | tee out.log",
+                    "command": RECOMMAND_COMMAND,
                     "image": RECOMMAND_IMAGE,
                     "bohrium": {
-                        "scass_type": "c32_m64_cpu",
+                        "scass_type": RECOMMAND_MACHINE,
                         "job_type": "container",
                         "platform": "ali",
                     },
@@ -432,64 +432,68 @@ class PostProcessFDForce:
         
         allpngs = []
         for case in results:
-            distance = results[case]["r1"]["pos"]
-            energy = results[case]["r1"]["energy"]
-            force = results[case]["r1"]["force"]
-            fd_force = results[case]["r1"]["fd_force"]
-            
-            d,e,f,fd = comm.clean_none_list(distance,energy,force,fd_force)
-            x, y = comm.clean_none_list(results[case]["r2"]["step"],results[case]["r2"]["fd_force"])
-            if len(d) == 0 or len(x) == 0:
-                continue
-            
-            fig,ax = plt.subplots(1,2,figsize=(12,5))
-            ax1 = ax[0]
-            #fig, ax1 = plt.subplots()
-            ax2 = ax1.twinx()
-            ax1.plot(d,e,"b+-",label="Energy(eV)", markersize=10)
-            ax2.plot(d,f,"ro--",label="Analytic(eV/$\mathrm{\AA}$)", markersize=10)
-            ax2.plot(d,fd,"m*--",label="Finite Difference(eV/$\mathrm{\AA}$)", markersize=10)
-            
-            ymax1 = max(e)
-            ymin1 = min(e)
-            ymax2 = max(max(f),max(fd))
-            ymin2 = min(min(f),min(fd))
-            ax1.set_xlabel("Atomic position ($\mathrm{\AA}$)" +  f"(FD step size: {x[0]:.3f}" + " $\mathrm{\AA}$)")
-            ax1.set_ylabel("Energy (eV)",color="b")
-            ax2.set_ylabel("Force (eV/$\mathrm{\AA}$)",color="r")
-            ax1.spines['left'].set_color('blue')
-            ax1.tick_params(axis='y', colors='blue')
-            ax2.spines['right'].set_color('red')
-            ax2.tick_params(axis='y', colors='red')
-            ax1.set_ylim(ymin1-(ymax1-ymin1)*0.1,ymax1+(ymax1-ymin1)*0.3)
-            ax2.set_ylim(ymin2-(ymax2-ymin2)*0.1,ymax2+(ymax2-ymin2)*0.3)
-            rmsd = self.cal_rmsd(f,fd)
-            ax1.set_title(case + f" (Deviation RMSD={rmsd:.2e} " + "eV/$\mathrm{\AA}$)")
-            print(case + f" (Deviation RMSD={rmsd:.2e} eV/Angstrom)")
-            ax1.legend(loc="upper left",frameon=False)
-            ax2.legend(loc="upper right",frameon=False)
-            ax2.grid(True)
+            try:
+                distance = results[case]["r1"]["pos"]
+                energy = results[case]["r1"]["energy"]
+                force = results[case]["r1"]["force"]
+                fd_force = results[case]["r1"]["fd_force"]
 
-            ax3 = ax[1]
-            # plot force0-FD vs distance0
-            y_ref = results[case]["r2"]["force"]
-            ymin = min(y_ref, min(y))
-            ymax = max(y_ref, max(y))
-            # sort x,y by x
-            ax3.plot(x,y,"m*--",label="Finite Difference(eV/$\mathrm{\AA}$)", markersize=10)
-            if y_ref != None:
-                ax3.axhline(y_ref,ls="--",color="red",label="Analytic(eV/$\mathrm{\AA}$)")
-            ax3.set_xlabel("FD step size ($\mathrm{\AA}$)")
-            ax3.set_ylabel("Force (eV/$\mathrm{\AA}$)")
-            ax3.set_title(case + f" (FD at initial position VS step size)")
-            ax3.legend(loc="upper right",frameon=False)
-            ax3.grid(True)
-            ax3.set_ylim(ymin-(ymax-ymin)*0.1,ymax+(ymax-ymin)*0.3)
+                d,e,f,fd = comm.clean_none_list(distance,energy,force,fd_force)
+                x, y = comm.clean_none_list(results[case]["r2"]["step"],results[case]["r2"]["fd_force"])
+                if len(d) == 0 or len(x) == 0:
+                    continue
+                
+                fig,ax = plt.subplots(1,2,figsize=(12,5))
+                ax1 = ax[0]
+                #fig, ax1 = plt.subplots()
+                ax2 = ax1.twinx()
+                ax1.plot(d,e,"b+-",label="Energy(eV)", markersize=10)
+                ax2.plot(d,f,"ro--",label="Analytic(eV/$\mathrm{\AA}$)", markersize=10)
+                ax2.plot(d,fd,"m*--",label="Finite Difference(eV/$\mathrm{\AA}$)", markersize=10)
 
-            plt.subplots_adjust(right=0.85) 
-            png = case + ".png"
-            plt.tight_layout()
-            plt.savefig(png,dpi=300)
-            plt.close()
-            allpngs.append(png)
+                ymax1 = max(e)
+                ymin1 = min(e)
+                ymax2 = max(max(f),max(fd))
+                ymin2 = min(min(f),min(fd))
+                ax1.set_xlabel("Atomic position ($\mathrm{\AA}$)" +  f"(FD step size: {x[0]:.3f}" + " $\mathrm{\AA}$)")
+                ax1.set_ylabel("Energy (eV)",color="b")
+                ax2.set_ylabel("Force (eV/$\mathrm{\AA}$)",color="r")
+                ax1.spines['left'].set_color('blue')
+                ax1.tick_params(axis='y', colors='blue')
+                ax2.spines['right'].set_color('red')
+                ax2.tick_params(axis='y', colors='red')
+                ax1.set_ylim(ymin1-(ymax1-ymin1)*0.1,ymax1+(ymax1-ymin1)*0.3)
+                ax2.set_ylim(ymin2-(ymax2-ymin2)*0.1,ymax2+(ymax2-ymin2)*0.3)
+                rmsd = self.cal_rmsd(f,fd)
+                ax1.set_title(case + f" (Deviation RMSD={rmsd:.2e} " + "eV/$\mathrm{\AA}$)")
+                print(case + f" (Deviation RMSD={rmsd:.2e} eV/Angstrom)")
+                ax1.legend(loc="upper left",frameon=False)
+                ax2.legend(loc="upper right",frameon=False)
+                ax2.grid(True)
+
+                ax3 = ax[1]
+                # plot force0-FD vs distance0
+                y_ref = results[case]["r2"]["force"]
+                ymin = min(y_ref, min(y))
+                ymax = max(y_ref, max(y))
+                # sort x,y by x
+                ax3.plot(x,y,"m*--",label="Finite Difference(eV/$\mathrm{\AA}$)", markersize=10)
+                if y_ref != None:
+                    ax3.axhline(y_ref,ls="--",color="red",label="Analytic(eV/$\mathrm{\AA}$)")
+                ax3.set_xlabel("FD step size ($\mathrm{\AA}$)")
+                ax3.set_ylabel("Force (eV/$\mathrm{\AA}$)")
+                ax3.set_title(case + f" (FD at initial position VS step size)")
+                ax3.legend(loc="upper right",frameon=False)
+                ax3.grid(True)
+                ax3.set_ylim(ymin-(ymax-ymin)*0.1,ymax+(ymax-ymin)*0.3)
+
+                plt.subplots_adjust(right=0.85) 
+                png = case + ".png"
+                plt.tight_layout()
+                plt.savefig(png,dpi=300)
+                plt.close()
+                allpngs.append(png)
+            except:
+                print(f"ERROR: plot failed for {case}")
+                traceback.print_exc()
         return allpngs
